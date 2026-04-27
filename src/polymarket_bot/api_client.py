@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -171,28 +172,70 @@ class PolymarketClient:
 
     def _parse_market(self, data: dict[str, Any]) -> Market:
         tokens: list[Token] = []
-        for t in data.get("tokens", []):
-            tokens.append(
-                Token(
+
+        # Gamma API returns outcomes/outcomePrices/clobTokenIds as JSON strings or lists
+        outcomes = self._parse_json_field(data.get("outcomes"))
+        outcome_prices = self._parse_json_field(data.get("outcomePrices"))
+        clob_ids = self._parse_json_field(data.get("clobTokenIds"))
+
+        if outcomes and outcome_prices:
+            for i, outcome in enumerate(outcomes):
+                price = float(outcome_prices[i]) if i < len(outcome_prices) else 0.0
+                token_id = clob_ids[i] if i < len(clob_ids) else ""
+                tokens.append(Token(
+                    token_id=token_id,
+                    outcome=outcome,
+                    price=price,
+                ))
+        else:
+            # Fallback: events endpoint nests tokens differently
+            for t in data.get("tokens", []):
+                tokens.append(Token(
                     token_id=t.get("token_id", ""),
                     outcome=t.get("outcome", ""),
                     price=float(t.get("price", 0)),
                     winner=bool(t.get("winner", False)),
-                )
-            )
+                ))
 
         return Market(
-            condition_id=data.get("condition_id", ""),
+            condition_id=data.get("conditionId", data.get("condition_id", "")),
             question=data.get("question", ""),
             slug=data.get("slug", ""),
             tokens=tokens,
             volume=float(data.get("volume", 0) or 0),
             volume_24h=float(data.get("volume24hr", 0) or 0),
             liquidity=float(data.get("liquidity", 0) or 0),
-            end_date=data.get("end_date_iso", "") or "",
+            end_date=data.get("endDateIso", data.get("end_date_iso", "")) or "",
             active=bool(data.get("active", True)),
             closed=bool(data.get("closed", False)),
-            tags=[tag.get("label", "") for tag in data.get("tags", []) if isinstance(tag, dict)],
+            tags=self._parse_tags(data.get("tags", [])),
             description=data.get("description", "") or "",
             event_slug=data.get("event_slug", "") or "",
         )
+
+    def _parse_json_field(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return []
+
+    def _parse_tags(self, tags: Any) -> list[str]:
+        if not tags:
+            return []
+        if isinstance(tags, list):
+            result: list[str] = []
+            for tag in tags:
+                if isinstance(tag, dict):
+                    result.append(tag.get("label", ""))
+                elif isinstance(tag, str):
+                    result.append(tag)
+            return result
+        return []

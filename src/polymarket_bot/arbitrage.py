@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from polymarket_bot.api_client import PolymarketClient
 from polymarket_bot.config import Config
@@ -160,12 +162,7 @@ class MultiOutcomeArbitrageScanner:
         total_price = 0.0
         market_prices: list[dict] = []
         for m in markets_data:
-            tokens = m.get("tokens", [])
-            yes_price = 0.0
-            for t in tokens:
-                if t.get("outcome", "").upper() == "YES":
-                    yes_price = float(t.get("price", 0) or 0)
-                    break
+            yes_price = self._extract_yes_price(m)
             total_price += yes_price
             market_prices.append({
                 "question": m.get("question", ""),
@@ -181,7 +178,7 @@ class MultiOutcomeArbitrageScanner:
             return None
 
         now = datetime.now(tz=timezone.utc)
-        end_str = event.get("end_date_iso", "")
+        end_str = event.get("endDateIso", event.get("end_date_iso", ""))
         remaining_days = None
         if end_str:
             try:
@@ -199,3 +196,31 @@ class MultiOutcomeArbitrageScanner:
             "markets": market_prices,
             "remaining_days": remaining_days,
         }
+
+    def _extract_yes_price(self, market_data: dict) -> float:
+        outcomes = self._parse_json_field(market_data.get("outcomes"))
+        prices = self._parse_json_field(market_data.get("outcomePrices"))
+        if outcomes and prices:
+            for i, outcome in enumerate(outcomes):
+                if outcome.upper() == "YES" and i < len(prices):
+                    return float(prices[i] or 0)
+            return 0.0
+
+        for t in market_data.get("tokens", []):
+            if t.get("outcome", "").upper() == "YES":
+                return float(t.get("price", 0) or 0)
+        return 0.0
+
+    def _parse_json_field(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return []
