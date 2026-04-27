@@ -126,12 +126,16 @@ class CorrelationAnalyzer:
 
         for market in markets:
             q = market.question.lower()
+            matched_topics: set[str] = set()
             for topic, patterns in self._compiled_patterns.items():
+                if topic in matched_topics:
+                    continue
                 for pattern in patterns:
                     if pattern.search(q):
                         if topic not in clusters:
                             clusters[topic] = EventCluster(theme=topic)
                         clusters[topic].markets.append(market)
+                        matched_topics.add(topic)
                         break
 
         return clusters
@@ -264,7 +268,6 @@ class CorrelationAnalyzer:
         """Find markets where one outcome implies another."""
         pairs: list[CorrelatedPair] = []
 
-
         for m in markets:
             q = m.question.lower()
             if "if" in q or "given" in q or "conditional" in q:
@@ -336,11 +339,15 @@ class CorrelationAnalyzer:
         return None
 
     def _extract_numbers(self, text: str) -> list[float]:
-        nums = re.findall(r"\$?([\d,]+(?:\.\d+)?)[kKmM]?", text)
+        nums = re.findall(r"\$?([\d,]+(?:\.\d+)?)([kKmM])?", text)
         result: list[float] = []
-        for n in nums:
+        for n, suffix in nums:
             try:
                 val = float(n.replace(",", ""))
+                if suffix.lower() == "k":
+                    val *= 1_000
+                elif suffix.lower() == "m":
+                    val *= 1_000_000
                 if val > 10:
                     result.append(val)
             except ValueError:

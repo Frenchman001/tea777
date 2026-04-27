@@ -2,8 +2,26 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
+
+
+def parse_json_field(value: Any) -> list[str]:
+    """Parse a field that may be a JSON string or a list."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return []
 
 
 class SignalType(str, Enum):

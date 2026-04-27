@@ -24,7 +24,9 @@ from polymarket_bot.display import (
     display_summary,
 )
 from polymarket_bot.profit_engine import (
+    _guess_category,
     calculate_fee,
+    estimate_slippage,
     kelly_criterion,
     score_market,
 )
@@ -279,6 +281,9 @@ def market(slug: str) -> None:
 @click.option("--top", default=20, help="Show top N alerts")
 def profit(max_markets: int, bankroll: float, top: int) -> None:
     """Maximum profit scan — smart alerts ranked by expected profit."""
+    if bankroll <= 0:
+        console.print("[red]Bankroll must be positive[/red]")
+        return
     config = Config.from_env()
     config.max_markets_per_scan = max_markets
     config.min_profit_pct = 0.05
@@ -336,6 +341,12 @@ def profit(max_markets: int, bankroll: float, top: int) -> None:
               help="Your estimated true probability (0-1)")
 def analyze(slug: str, bankroll: float, probability: float | None) -> None:
     """Deep analysis of a specific market with bet sizing."""
+    if probability is not None and not (0.0 < probability < 1.0):
+        console.print("[red]Probability must be between 0 and 1 (exclusive)[/red]")
+        return
+    if bankroll <= 0:
+        console.print("[red]Bankroll must be positive[/red]")
+        return
     config = Config.from_env()
 
     with PolymarketClient(config) as client:
@@ -360,7 +371,6 @@ def analyze(slug: str, bankroll: float, probability: float | None) -> None:
         console.print(f"  Liquidity: ${m.liquidity:,.0f}")
 
         # Fee calculation
-        from polymarket_bot.profit_engine import _guess_category
         cat = _guess_category(m)
         fee_yes = calculate_fee(m.yes_price, 100, cat)
         console.print(f"\n[bold]Fees ({cat}):[/bold]")
@@ -402,7 +412,6 @@ def analyze(slug: str, bankroll: float, probability: float | None) -> None:
         token_id = m.yes_token_id if side == "YES" else m.no_token_id
         if token_id:
             try:
-                from polymarket_bot.profit_engine import estimate_slippage
                 book = client.get_order_book(token_id)
                 slip = estimate_slippage(book, best_kelly.recommended_bet_usd)
                 console.print(f"\n[bold]Orderbook ({side}):[/bold]")

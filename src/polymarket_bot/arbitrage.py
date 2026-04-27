@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from polymarket_bot.api_client import PolymarketClient
 from polymarket_bot.config import Config
-from polymarket_bot.models import ArbitrageOpportunity, Market
+from polymarket_bot.models import ArbitrageOpportunity, Market, parse_json_field
 
 logger = logging.getLogger(__name__)
 
@@ -198,8 +196,8 @@ class MultiOutcomeArbitrageScanner:
         }
 
     def _extract_yes_price(self, market_data: dict) -> float:
-        outcomes = self._parse_json_field(market_data.get("outcomes"))
-        prices = self._parse_json_field(market_data.get("outcomePrices"))
+        outcomes = parse_json_field(market_data.get("outcomes"))
+        prices = parse_json_field(market_data.get("outcomePrices"))
         if outcomes and prices:
             for i, outcome in enumerate(outcomes):
                 if outcome.upper() == "YES" and i < len(prices):
@@ -211,16 +209,4 @@ class MultiOutcomeArbitrageScanner:
                 return float(t.get("price", 0) or 0)
         return 0.0
 
-    def _parse_json_field(self, value: Any) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-                if isinstance(parsed, list):
-                    return parsed
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return []
+

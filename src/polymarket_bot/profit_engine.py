@@ -7,6 +7,7 @@ orderbook depth analysis, and composite market scoring.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 
 from polymarket_bot.models import Market, OrderBook
@@ -99,7 +100,7 @@ def calculate_fee(
     """
     fee_rate, exponent = FEE_SCHEDULE.get(category.lower(), DEFAULT_FEE)
 
-    if fee_rate == 0 or price <= 0 or price >= 1:
+    if fee_rate == 0 or price <= 0 or price >= 1 or shares <= 0:
         return FeeEstimate(
             fee_rate=fee_rate, exponent=exponent, price=price,
             shares=shares, fee_amount=0.0, effective_fee_pct=0.0,
@@ -318,7 +319,6 @@ def score_market(
     time_score = 5.0
     if market.end_date:
         try:
-            from datetime import datetime, timezone
             end = datetime.fromisoformat(market.end_date.replace("Z", "+00:00"))
             days_left = (end - datetime.now(tz=timezone.utc)).days
             if days_left < 1:

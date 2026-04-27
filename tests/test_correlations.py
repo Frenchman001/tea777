@@ -70,3 +70,35 @@ def test_unrelated_markets_no_pairs():
     ]
     pairs = analyzer.find_correlations(markets)
     assert len(pairs) == 0
+
+
+def test_timeline_inconsistency():
+    analyzer = CorrelationAnalyzer()
+    markets = [
+        _make_market("Will Bitcoin hit $100k by June?", 0.7, slug="btc-100k-jun"),
+        _make_market("Will Bitcoin hit $100k by December?", 0.5, slug="btc-100k-dec"),
+    ]
+    pairs = analyzer.find_correlations(markets)
+    timeline_pairs = [p for p in pairs if p.correlation_type == "TIMELINE"]
+    assert len(timeline_pairs) >= 1
+
+
+def test_empty_markets_no_crash():
+    analyzer = CorrelationAnalyzer()
+    pairs = analyzer.find_correlations([])
+    clusters = analyzer.find_event_clusters([])
+    assert pairs == []
+    assert clusters == []
+
+
+def test_single_market_no_cluster():
+    analyzer = CorrelationAnalyzer()
+    markets = [_make_market("Will Bitcoin hit $100k?", 0.5, slug="btc-100k")]
+    clusters = analyzer.find_event_clusters(markets)
+    assert len(clusters) == 0
+
+
+def test_number_extraction_with_k_suffix():
+    analyzer = CorrelationAnalyzer()
+    nums = analyzer._extract_numbers("Will BTC hit $100k?")
+    assert 100000 in nums

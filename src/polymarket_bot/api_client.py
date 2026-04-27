@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import time
 from typing import Any
 
 import httpx
 
 from polymarket_bot.config import Config
-from polymarket_bot.models import Market, OrderBook, OrderBookLevel, Token
+from polymarket_bot.models import Market, OrderBook, OrderBookLevel, Token, parse_json_field
+
+logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 2
+RETRY_DELAY = 1.0
 
 
 class PolymarketClient:
@@ -59,8 +64,9 @@ class PolymarketClient:
         if tag:
             params["tag"] = tag
 
-        resp = self._http.get(f"{self.config.gamma_host}/markets", params=params)
-        resp.raise_for_status()
+        resp = self._request_with_retry(
+            "GET", f"{self.config.gamma_host}/markets", params=params,
+        )
         return [self._parse_market(m) for m in resp.json()]
 
     def get_all_active_markets(self, max_markets: int | None = None) -> list[Market]:
@@ -70,7 +76,11 @@ class PolymarketClient:
         limit = max_markets or self.config.max_markets_per_scan
 
         while len(all_markets) < limit:
-            batch = self.get_markets(limit=batch_size, offset=offset)
+            try:
+                batch = self.get_markets(limit=batch_size, offset=offset)
+            except httpx.HTTPError as e:
+                logger.warning("Batch fetch failed at offset %d: %s", offset, e)
+                break
             if not batch:
                 break
             all_markets.extend(batch)
@@ -102,8 +112,9 @@ class PolymarketClient:
         if tag:
             params["tag"] = tag
 
-        resp = self._http.get(f"{self.config.gamma_host}/events", params=params)
-        resp.raise_for_status()
+        resp = self._request_with_retry(
+            "GET", f"{self.config.gamma_host}/events", params=params,
+        )
         return resp.json()
 
     # ── CLOB API (orderbook / prices) ──────────────────────────────
@@ -168,15 +179,52 @@ class PolymarketClient:
                 prices[token.outcome] = token.price
         return prices
 
+    # ── Retry helper ───────────────────────────────────────────────
+
+    def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Make HTTP request with retry on transient failures."""
+        last_exc: Exception | None = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                resp = self._http.request(method, url, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_exc = e
+                if attempt < MAX_RETRIES:
+                    logger.debug(
+                        "Retry %d/%d for %s: %s",
+                        attempt + 1, MAX_RETRIES, url, e,
+                    )
+                    time.sleep(RETRY_DELAY * (attempt + 1))
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (429, 500, 502, 503, 504):
+                    last_exc = e
+                    if attempt < MAX_RETRIES:
+                        logger.debug(
+                            "Retry %d/%d for %s: HTTP %d",
+                            attempt + 1, MAX_RETRIES, url,
+                            e.response.status_code,
+                        )
+                        time.sleep(RETRY_DELAY * (attempt + 1))
+                    continue
+                raise
+        raise last_exc  # type: ignore[misc]
+
     # ── Parsing helpers ────────────────────────────────────────────
 
     def _parse_market(self, data: dict[str, Any]) -> Market:
         tokens: list[Token] = []
 
         # Gamma API returns outcomes/outcomePrices/clobTokenIds as JSON strings or lists
-        outcomes = self._parse_json_field(data.get("outcomes"))
-        outcome_prices = self._parse_json_field(data.get("outcomePrices"))
-        clob_ids = self._parse_json_field(data.get("clobTokenIds"))
+        outcomes = parse_json_field(data.get("outcomes"))
+        outcome_prices = parse_json_field(data.get("outcomePrices"))
+        clob_ids = parse_json_field(data.get("clobTokenIds"))
 
         if outcomes and outcome_prices:
             for i, outcome in enumerate(outcomes):
@@ -212,20 +260,6 @@ class PolymarketClient:
             description=data.get("description", "") or "",
             event_slug=data.get("event_slug", "") or "",
         )
-
-    def _parse_json_field(self, value: Any) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-                if isinstance(parsed, list):
-                    return parsed
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return []
 
     def _parse_tags(self, tags: Any) -> list[str]:
         if not tags:

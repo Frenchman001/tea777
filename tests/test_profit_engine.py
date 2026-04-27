@@ -157,3 +157,50 @@ def test_net_profit_positive_with_edge():
 def test_net_profit_negative_without_edge():
     profit = calculate_net_profit(0.6, 100, 0.4, "crypto")
     assert profit < 0
+
+
+# ── Edge Case Tests ────────────────────────────────────────────────
+
+def test_fee_negative_shares_returns_zero():
+    fee = calculate_fee(0.5, -10, "crypto")
+    assert fee.fee_amount == 0.0
+
+
+def test_kelly_invalid_probability():
+    sizing = kelly_criterion(0.0, 0.5, bankroll=1000)
+    assert sizing.kelly_fraction == 0.0
+    assert sizing.recommended_bet_usd == 0.0
+
+
+def test_kelly_invalid_price():
+    sizing = kelly_criterion(0.7, 0.0, bankroll=1000)
+    assert sizing.kelly_fraction == 0.0
+    sizing2 = kelly_criterion(0.7, 1.0, bankroll=1000)
+    assert sizing2.kelly_fraction == 0.0
+
+
+def test_slippage_sell_side():
+    book = OrderBook(
+        token_id="t1",
+        bids=[
+            OrderBookLevel(price=0.50, size=100),
+            OrderBookLevel(price=0.45, size=100),
+        ],
+        best_bid=0.50,
+    )
+    slip = estimate_slippage(book, 10.0, side="sell")
+    assert slip.slippage_pct >= 0.0
+    assert slip.levels_consumed >= 1
+
+
+def test_score_zero_volume_market():
+    m = _make_market(0.5, 0.5, volume_24h=0, liquidity=0)
+    score = score_market(m)
+    assert score.volume_score == 0.0
+    assert score.total_score >= 0.0
+
+
+def test_fee_unknown_category_uses_default():
+    fee = calculate_fee(0.5, 100, "nonexistent_category")
+    assert fee.fee_amount > 0
+    assert fee.category == "nonexistent_category"

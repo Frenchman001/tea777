@@ -7,6 +7,7 @@ from polymarket_bot.models import (
     SignalType,
     Token,
     TradingSignal,
+    parse_json_field,
 )
 
 
@@ -119,3 +120,25 @@ def test_trading_signal_description():
     assert "UNDERVALUED" in sig.description
     assert "YES" in sig.description
     assert "85%" in sig.description
+
+
+# ── parse_json_field Tests ────────────────────────────────────────
+
+def test_parse_json_field_none():
+    assert parse_json_field(None) == []
+
+
+def test_parse_json_field_list():
+    assert parse_json_field(["a", "b"]) == ["a", "b"]
+
+
+def test_parse_json_field_json_string():
+    assert parse_json_field('["Yes", "No"]') == ["Yes", "No"]
+
+
+def test_parse_json_field_invalid_string():
+    assert parse_json_field("not json") == []
+
+
+def test_parse_json_field_non_list_json():
+    assert parse_json_field('{"key": "value"}') == []

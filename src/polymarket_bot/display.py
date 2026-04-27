@@ -12,6 +12,7 @@ from polymarket_bot.models import (
     SignalType,
     TradingSignal,
 )
+from polymarket_bot.profit_engine import BetSizing
 
 console = Console()
 
@@ -207,18 +208,18 @@ def display_alerts(alerts: list, title: str = "Smart Alerts") -> None:
         console.print(f"  [{priority_colors.get(p_name, 'white')}]{p_name}[/] {alert.details}")
 
 
-def display_kelly(sizing: object) -> None:
+def display_kelly(sizing: BetSizing) -> None:
     """Display Kelly Criterion bet sizing results."""
     console.print(Panel(
         f"[bold]Kelly Criterion Bet Sizing[/bold]\n"
-        f"Win probability: {sizing.win_probability:.1%}\n"  # type: ignore[union-attr]
-        f"Edge: {sizing.edge:+.2%}\n"  # type: ignore[union-attr]
-        f"Kelly fraction: {sizing.kelly_fraction:.1%}\n"  # type: ignore[union-attr]
-        f"Full Kelly: ${sizing.kelly_bet_usd:.2f}\n"  # type: ignore[union-attr]
+        f"Win probability: {sizing.win_probability:.1%}\n"
+        f"Edge: {sizing.edge:+.2%}\n"
+        f"Kelly fraction: {sizing.kelly_fraction:.1%}\n"
+        f"Full Kelly: ${sizing.kelly_bet_usd:.2f}\n"
         f"Half Kelly (recommended): "
-        f"[green]${sizing.half_kelly_bet_usd:.2f}[/green]\n"  # type: ignore[union-attr]
-        f"Quarter Kelly: ${sizing.quarter_kelly_bet_usd:.2f}\n"  # type: ignore[union-attr]
-        f"Bankroll: ${sizing.bankroll:.2f}",  # type: ignore[union-attr]
+        f"[green]${sizing.half_kelly_bet_usd:.2f}[/green]\n"
+        f"Quarter Kelly: ${sizing.quarter_kelly_bet_usd:.2f}\n"
+        f"Bankroll: ${sizing.bankroll:.2f}",
         border_style="green",
     ))
 
