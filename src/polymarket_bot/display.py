@@ -159,6 +159,70 @@ def display_summary(
     console.print(summary)
 
 
+def display_alerts(alerts: list, title: str = "Smart Alerts") -> None:
+    """Display prioritized smart alerts."""
+    if not alerts:
+        console.print(Panel("[yellow]No alerts[/yellow]", title=title))
+        return
+
+    table = Table(title=title, show_lines=True)
+    table.add_column("Priority", justify="center", style="bold")
+    table.add_column("Type", style="bold")
+    table.add_column("Market", style="cyan", max_width=35)
+    table.add_column("Profit $", justify="right", style="green")
+    table.add_column("Bet $", justify="right")
+    table.add_column("Conf.", justify="right")
+    table.add_column("Risk", justify="center")
+
+    priority_colors = {
+        "CRITICAL": "bold red",
+        "HIGH": "bold yellow",
+        "MEDIUM": "white",
+        "LOW": "dim",
+    }
+
+    for alert in alerts:
+        p_name = alert.priority.value if hasattr(alert.priority, "value") else str(alert.priority)
+        p_color = priority_colors.get(p_name, "white")
+
+        question = alert.market_question
+        if len(question) > 35:
+            question = question[:32] + "..."
+
+        table.add_row(
+            f"[{p_color}]{p_name}[/{p_color}]",
+            alert.alert_type,
+            question,
+            f"${alert.expected_profit_usd:.2f}",
+            f"${alert.recommended_bet_usd:.0f}",
+            f"{alert.confidence:.0%}",
+            alert.risk_level,
+        )
+
+    console.print(table)
+
+    console.print("\n[bold]Details:[/bold]")
+    for alert in alerts[:5]:
+        p_name = alert.priority.value if hasattr(alert.priority, "value") else str(alert.priority)
+        console.print(f"  [{priority_colors.get(p_name, 'white')}]{p_name}[/] {alert.details}")
+
+
+def display_kelly(sizing: object) -> None:
+    """Display Kelly Criterion bet sizing results."""
+    console.print(Panel(
+        f"[bold]Kelly Criterion Bet Sizing[/bold]\n"
+        f"Win probability: {sizing.win_probability:.1%}\n"  # type: ignore[union-attr]
+        f"Edge: {sizing.edge:+.2%}\n"  # type: ignore[union-attr]
+        f"Kelly fraction: {sizing.kelly_fraction:.1%}\n"  # type: ignore[union-attr]
+        f"Full Kelly: ${sizing.kelly_bet_usd:.2f}\n"  # type: ignore[union-attr]
+        f"Half Kelly (recommended): "
+        f"[green]${sizing.half_kelly_bet_usd:.2f}[/green]\n"  # type: ignore[union-attr]
+        f"Quarter Kelly: ${sizing.quarter_kelly_bet_usd:.2f}\n"  # type: ignore[union-attr]
+        f"Bankroll: ${sizing.bankroll:.2f}",  # type: ignore[union-attr]
+        border_style="green",
+    ))
+
+
 def _signal_type_color(st: SignalType) -> str:
     return {
         SignalType.ARBITRAGE: "green",

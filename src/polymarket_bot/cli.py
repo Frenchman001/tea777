@@ -14,13 +14,22 @@ from rich.panel import Panel
 from polymarket_bot.api_client import PolymarketClient
 from polymarket_bot.arbitrage import ArbitrageScanner, MultiOutcomeArbitrageScanner
 from polymarket_bot.config import Config
+from polymarket_bot.correlations import CorrelationAnalyzer
 from polymarket_bot.display import (
+    display_alerts,
     display_arbitrage_opportunities,
+    display_kelly,
     display_multi_outcome_arbitrage,
     display_signals,
     display_summary,
 )
+from polymarket_bot.profit_engine import (
+    calculate_fee,
+    kelly_criterion,
+    score_market,
+)
 from polymarket_bot.signals import SignalAnalyzer
+from polymarket_bot.smart_alerts import SmartAlertEngine
 
 console = Console()
 
@@ -262,6 +271,202 @@ def market(slug: str) -> None:
                 console.print(f"  Midpoint: {book.midpoint:.4f}")
             except Exception as e:
                 console.print(f"  [red]Error: {e}[/red]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=300, help="Max markets to scan")
+@click.option("--bankroll", "-b", default=1000.0, help="Your bankroll in USD")
+@click.option("--top", default=20, help="Show top N alerts")
+def profit(max_markets: int, bankroll: float, top: int) -> None:
+    """Maximum profit scan — smart alerts ranked by expected profit."""
+    config = Config.from_env()
+    config.max_markets_per_scan = max_markets
+    config.min_profit_pct = 0.05
+    config.min_volume_24h = 0
+    config.min_confidence = 0.3
+
+    console.print(Panel(
+        f"[bold]PROFIT MAXIMIZER[/bold]\n"
+        f"Bankroll: ${bankroll:,.0f} | Markets: {max_markets}\n"
+        f"Kelly + Fees + Correlations + Scoring",
+        border_style="bold green",
+    ))
+
+    with PolymarketClient(config) as client:
+        console.print("[dim]Fetching markets...[/dim]")
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        engine = SmartAlertEngine(client, config)
+        summary = engine.generate_alerts(markets, bankroll=bankroll)
+
+        display_alerts(summary.alerts[:top], title="Profit Opportunities")
+
+        stats = summary.scan_stats
+        console.print(Panel(
+            f"[bold]Profit Summary[/bold]\n"
+            f"Total alerts: {stats.get('total_alerts', 0)}\n"
+            f"  Arbitrage: {stats.get('arbitrage_alerts', 0)}\n"
+            f"  Signals: {stats.get('signal_alerts', 0)}\n"
+            f"  Correlations: {stats.get('correlation_alerts', 0)}\n"
+            f"  Top scores: {stats.get('score_alerts', 0)}\n"
+            f"Expected total profit: "
+            f"[green]${summary.total_expected_profit:.2f}[/green]",
+            border_style="green",
+        ))
+
+        if summary.best_opportunity:
+            best = summary.best_opportunity
+            console.print(Panel(
+                f"[bold]Best Opportunity[/bold]\n"
+                f"{best.market_question[:70]}\n"
+                f"Type: {best.alert_type} | "
+                f"Profit: [green]${best.expected_profit_usd:.2f}[/green]\n"
+                f"Bet: ${best.recommended_bet_usd:.0f} | "
+                f"Confidence: {best.confidence:.0%} | "
+                f"Risk: {best.risk_level}",
+                border_style="bold yellow",
+            ))
+
+
+@main.command()
+@click.argument("slug")
+@click.option("--bankroll", "-b", default=1000.0, help="Your bankroll")
+@click.option("--probability", "-p", default=None, type=float,
+              help="Your estimated true probability (0-1)")
+def analyze(slug: str, bankroll: float, probability: float | None) -> None:
+    """Deep analysis of a specific market with bet sizing."""
+    config = Config.from_env()
+
+    with PolymarketClient(config) as client:
+        resp = client._http.get(
+            f"{config.gamma_host}/markets", params={"slug": slug}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            console.print(f"[red]Market not found: {slug}[/red]")
+            return
+
+        market_data = data[0] if isinstance(data, list) else data
+        m = client._parse_market(market_data)
+
+        console.print(Panel(f"[bold]{m.question}[/bold]", border_style="cyan"))
+
+        # Basic info
+        console.print(f"  YES: {m.yes_price:.4f} | NO: {m.no_price:.4f}")
+        console.print(f"  Sum: {m.price_sum:.4f} | Spread: {m.spread:.4f}")
+        console.print(f"  Volume 24h: ${m.volume_24h:,.0f}")
+        console.print(f"  Liquidity: ${m.liquidity:,.0f}")
+
+        # Fee calculation
+        from polymarket_bot.profit_engine import _guess_category
+        cat = _guess_category(m)
+        fee_yes = calculate_fee(m.yes_price, 100, cat)
+        console.print(f"\n[bold]Fees ({cat}):[/bold]")
+        console.print(
+            f"  100 shares YES: ${fee_yes.fee_amount:.4f}"
+            f" ({fee_yes.effective_fee_pct:.3f}%)"
+        )
+
+        # Market score
+        score = score_market(m, probability, bankroll)
+        console.print(f"\n[bold]Score: {score.total_score:.1f}/10[/bold]")
+        console.print(
+            f"  EV={score.ev_score:.1f} Liq={score.liquidity_score:.1f}"
+            f" Time={score.time_score:.1f} Vol={score.volume_score:.1f}"
+        )
+        console.print(f"  Risk: {score.risk_tier.value}")
+        console.print(
+            f"  Fee-adjusted EV: {score.fee_adjusted_ev:+.2%}"
+        )
+        for r in score.reasoning:
+            console.print(f"    {r}")
+
+        # Kelly sizing
+        est_prob = probability or m.yes_price
+        kelly_yes = kelly_criterion(
+            est_prob, m.yes_price, bankroll, category=cat,
+        )
+        kelly_no = kelly_criterion(
+            1.0 - est_prob, m.no_price, bankroll, category=cat,
+        )
+
+        best_kelly = kelly_yes if kelly_yes.edge > kelly_no.edge else kelly_no
+        side = "YES" if kelly_yes.edge > kelly_no.edge else "NO"
+
+        console.print(f"\n[bold]Recommended: {side}[/bold]")
+        display_kelly(best_kelly)
+
+        # Orderbook analysis
+        token_id = m.yes_token_id if side == "YES" else m.no_token_id
+        if token_id:
+            try:
+                from polymarket_bot.profit_engine import estimate_slippage
+                book = client.get_order_book(token_id)
+                slip = estimate_slippage(book, best_kelly.recommended_bet_usd)
+                console.print(f"\n[bold]Orderbook ({side}):[/bold]")
+                console.print(f"  Best ask: {book.best_ask:.4f}")
+                console.print(f"  Best bid: {book.best_bid:.4f}")
+                console.print(f"  Slippage: {slip.slippage_pct:.2f}%")
+                console.print(
+                    f"  Avg fill: {slip.avg_fill_price:.4f}"
+                    f" ({slip.levels_consumed} levels)"
+                )
+            except Exception as e:
+                console.print(f"  [red]Orderbook error: {e}[/red]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=200, help="Max markets")
+def correlations(max_markets: int) -> None:
+    """Find cross-market price divergences."""
+    config = Config.from_env()
+
+    with PolymarketClient(config) as client:
+        console.print("[dim]Fetching markets...[/dim]")
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        analyzer = CorrelationAnalyzer()
+        pairs = analyzer.find_correlations(markets)
+
+        if not pairs:
+            console.print("[yellow]No price divergences found[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Cross-Market Divergences", show_lines=True)
+        table.add_column("Type", style="bold")
+        table.add_column("Market A", style="cyan", max_width=30)
+        table.add_column("Market B", style="cyan", max_width=30)
+        table.add_column("Divergence", justify="right", style="green")
+        table.add_column("Profit Opp.", justify="right")
+
+        for pair in pairs[:15]:
+            q_a = pair.market_a.question[:30]
+            q_b = pair.market_b.question[:30]
+            table.add_row(
+                pair.correlation_type,
+                q_a,
+                q_b,
+                f"{pair.price_divergence:.1%}",
+                f"{pair.profit_opportunity:.1%}",
+            )
+
+        console.print(table)
+
+        console.print("\n[bold]Reasoning:[/bold]")
+        for pair in pairs[:5]:
+            console.print(f"  {pair.reasoning}")
+
+        clusters = analyzer.find_event_clusters(markets)
+        if clusters:
+            console.print("\n[bold]Event Clusters:[/bold]")
+            for c in clusters[:5]:
+                console.print(
+                    f"  {c.theme}: {len(c.markets)} markets"
+                )
 
 
 if __name__ == "__main__":
