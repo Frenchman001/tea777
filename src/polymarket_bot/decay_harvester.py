@@ -77,9 +77,10 @@ class DecayHarvester:
                 continue
 
             try:
-                end_dt = datetime.fromisoformat(
-                    market.end_date.replace("Z", "+00:00"),
-                )
+                raw = market.end_date.replace("Z", "+00:00")
+                end_dt = datetime.fromisoformat(raw)
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
             except (ValueError, TypeError):
                 continue
 
