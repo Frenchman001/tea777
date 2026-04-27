@@ -40,6 +40,16 @@ class Config:
     include_tags: list[str] = field(default_factory=list)
     min_end_days: int = 1
 
+    # Telegram notifications
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
+    # Portfolio limits
+    max_single_bet_pct: float = 0.10
+    max_theme_pct: float = 0.25
+    max_category_pct: float = 0.35
+    max_total_invested_pct: float = 0.80
+
     @classmethod
     def from_env(cls) -> Config:
         return cls(
@@ -56,4 +66,6 @@ class Config:
             funder_address=os.getenv("POLYMARKET_FUNDER_ADDRESS"),
             max_bet_size_usd=float(os.getenv("MAX_BET_SIZE_USD", "50")),
             auto_trade=os.getenv("AUTO_TRADE", "false").lower() == "true",
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         )

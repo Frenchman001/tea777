@@ -478,5 +478,482 @@ def correlations(max_markets: int) -> None:
                 )
 
 
+@main.command()
+@click.option("--max-markets", "-n", default=200, help="Max markets to check")
+@click.option("--bankroll", "-b", default=1000.0, help="Your bankroll")
+@click.option("--notify/--no-notify", default=False, help="Send Telegram notifications")
+def profit_plus(max_markets: int, bankroll: float, notify: bool) -> None:
+    """Enhanced profit scan with liquidity checks, portfolio limits, and external data."""
+    if bankroll <= 0:
+        console.print("[red]Bankroll must be positive[/red]")
+        return
+    config = Config.from_env()
+    config.max_markets_per_scan = max_markets
+    config.min_profit_pct = 0.05
+    config.min_volume_24h = 0
+    config.min_confidence = 0.3
+
+    from polymarket_bot.external_data import ExternalDataAggregator
+    from polymarket_bot.portfolio import optimize_alerts
+
+    console.print(Panel(
+        f"[bold]PROFIT MAXIMIZER v2[/bold]\n"
+        f"Bankroll: ${bankroll:,.0f} | Markets: {max_markets}\n"
+        f"Kelly + Fees + Liquidity + Portfolio + External Data",
+        border_style="bold green",
+    ))
+
+    with PolymarketClient(config) as client:
+        console.print("[dim]Fetching markets...[/dim]")
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        engine = SmartAlertEngine(client, config)
+        summary = engine.generate_alerts(markets, bankroll=bankroll)
+
+        # Portfolio optimization
+        console.print("[dim]Applying portfolio limits...[/dim]")
+        optimized = optimize_alerts(summary.alerts, bankroll=bankroll)
+        approved = [(a, r) for a, r in optimized if r.approved]
+
+        # External data
+        console.print("[dim]Checking external data sources...[/dim]")
+        ext = ExternalDataAggregator()
+        try:
+            ext_signals = ext.analyze_markets(markets)
+        finally:
+            ext.close()
+
+        # Display results
+        from rich.table import Table
+
+        if approved:
+            table = Table(title="Approved Opportunities (Portfolio-Optimized)", show_lines=True)
+            table.add_column("Type", style="bold")
+            table.add_column("Market", style="cyan", max_width=40)
+            table.add_column("Bet", justify="right", style="green")
+            table.add_column("Profit", justify="right", style="bold green")
+            table.add_column("Theme%", justify="right")
+            table.add_column("Status")
+
+            for alert, alloc in approved[:20]:
+                q = alert.market_question[:40]
+                table.add_row(
+                    alert.alert_type,
+                    q,
+                    f"${alloc.adjusted_bet_usd:.0f}",
+                    f"${alert.expected_profit_usd:.2f}",
+                    f"{alloc.theme_exposure_pct:.0%}",
+                    alloc.reason[:20],
+                )
+            console.print(table)
+
+        if ext_signals:
+            table = Table(title="External Data Signals", show_lines=True)
+            table.add_column("Source", style="bold")
+            table.add_column("Market", style="cyan", max_width=40)
+            table.add_column("Poly Price", justify="right")
+            table.add_column("Est. Prob", justify="right", style="green")
+            table.add_column("Edge", justify="right", style="bold yellow")
+            table.add_column("Side", justify="center")
+
+            for sig in ext_signals[:10]:
+                q = sig.market_question[:40]
+                table.add_row(
+                    sig.source,
+                    q,
+                    f"{sig.polymarket_price:.0%}",
+                    f"{sig.estimated_probability:.0%}",
+                    f"{sig.edge:+.1%}",
+                    sig.recommended_side,
+                )
+            console.print(table)
+
+        total_approved_profit = sum(a.expected_profit_usd for a, _ in approved)
+        total_bet = sum(r.adjusted_bet_usd for _, r in approved)
+        rejected = len(optimized) - len(approved)
+
+        console.print(Panel(
+            f"[bold]Summary[/bold]\n"
+            f"Total alerts: {len(summary.alerts)} | Approved: {len(approved)} | "
+            f"Rejected: {rejected}\n"
+            f"Total bet: ${total_bet:.0f} / ${bankroll:.0f} bankroll\n"
+            f"Expected profit: [green]${total_approved_profit:.2f}[/green]\n"
+            f"External signals: {len(ext_signals)}",
+            border_style="green",
+        ))
+
+        # Telegram notifications
+        if notify:
+            from polymarket_bot.telegram_alerts import TelegramNotifier
+            tg = TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
+            if tg.is_configured:
+                tg.send_summary(summary)
+                tg.send_top_alerts(summary.alerts[:5])
+                console.print("[green]Telegram notifications sent[/green]")
+                tg.close()
+            else:
+                console.print(
+                    "[yellow]Telegram not configured"
+                    " (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)[/yellow]"
+                )
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=100, help="Max markets to fetch")
+@click.option("--bankroll", "-b", default=1000.0, help="Your bankroll")
+def backtest(max_markets: int, bankroll: float) -> None:
+    """Backtest strategies on resolved markets."""
+    if bankroll <= 0:
+        console.print("[red]Bankroll must be positive[/red]")
+        return
+    config = Config.from_env()
+
+    from polymarket_bot.backtesting import BacktestEngine
+
+    console.print(Panel(
+        f"[bold]Backtesting Engine[/bold]\n"
+        f"Fetching {max_markets} resolved markets | Bankroll: ${bankroll:,.0f}",
+        border_style="yellow",
+    ))
+
+    with PolymarketClient(config) as client:
+        bt = BacktestEngine(client, config, bankroll=bankroll)
+
+        console.print("[dim]Fetching resolved markets...[/dim]")
+        resolved = bt.fetch_resolved_markets(max_markets)
+        console.print(f"[dim]Found {len(resolved)} resolved markets[/dim]")
+
+        if not resolved:
+            console.print("[yellow]No resolved markets found for backtesting[/yellow]")
+            return
+
+        from rich.table import Table
+
+        results = [
+            bt.run_kelly_strategy(resolved),
+            bt.run_arbitrage_strategy(resolved),
+            bt.run_value_strategy(resolved),
+        ]
+
+        table = Table(title="Backtest Results", show_lines=True)
+        table.add_column("Strategy", style="bold")
+        table.add_column("Trades", justify="right")
+        table.add_column("Win Rate", justify="right")
+        table.add_column("Net P&L", justify="right")
+        table.add_column("ROI", justify="right")
+        table.add_column("Sharpe", justify="right")
+        table.add_column("Max DD", justify="right")
+
+        for r in results:
+            pnl_color = "green" if r.net_pnl >= 0 else "red"
+            table.add_row(
+                r.strategy_name,
+                str(r.trades_taken),
+                f"{r.win_rate:.0%}",
+                f"[{pnl_color}]${r.net_pnl:.2f}[/{pnl_color}]",
+                f"{r.roi_pct:.1f}%",
+                f"{r.sharpe_ratio:.2f}",
+                f"{r.max_drawdown:.1%}",
+            )
+
+        console.print(table)
+
+        for r in results:
+            if r.best_trade:
+                console.print(
+                    f"\n[bold]{r.strategy_name}[/bold] best: "
+                    f"{r.best_trade.question[:50]}... "
+                    f"[green]+${r.best_trade.net_pnl:.2f}[/green]"
+                )
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=100, help="Max markets")
+def ml_predict(max_markets: int) -> None:
+    """ML-based market outcome predictions."""
+    config = Config.from_env()
+
+    from polymarket_bot.ml_predictor import MLPredictor
+
+    console.print(Panel(
+        "[bold]ML Predictor[/bold]\nLogistic regression on market features",
+        border_style="magenta",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        predictor = MLPredictor()
+        predictions = predictor.predict_markets(markets)
+
+        if not predictions:
+            console.print("[yellow]No high-edge predictions found[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="ML Predictions (|edge| > 5%)", show_lines=True)
+        table.add_column("Market", style="cyan", max_width=45)
+        table.add_column("Predicted", justify="right", style="green")
+        table.add_column("Market $", justify="right")
+        table.add_column("Edge", justify="right", style="bold yellow")
+        table.add_column("Side", justify="center")
+
+        for p in predictions[:15]:
+            q = p.question[:45]
+            table.add_row(
+                q,
+                f"{p.predicted_prob:.0%}",
+                f"{p.market_price:.0%}",
+                f"{p.edge:+.1%}",
+                p.recommended_side,
+            )
+        console.print(table)
+        console.print(f"\n[bold]Total predictions with edge: {len(predictions)}[/bold]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=100, help="Max markets")
+def cross_arb(max_markets: int) -> None:
+    """Find cross-platform and internal arbitrage opportunities."""
+    config = Config.from_env()
+
+    from polymarket_bot.cross_platform import CrossPlatformScanner
+
+    console.print(Panel(
+        "[bold]Cross-Platform Arbitrage[/bold]\nPolymarket vs Kalshi + internal dupes",
+        border_style="blue",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        scanner = CrossPlatformScanner()
+        try:
+            console.print("[dim]Checking Kalshi markets...[/dim]")
+            cross_arbs = scanner.find_cross_arb(markets)
+
+            console.print("[dim]Checking internal duplicates...[/dim]")
+            internal = scanner.find_internal_cross_arb(markets)
+        finally:
+            scanner.close()
+
+        from rich.table import Table
+
+        if internal:
+            table = Table(title="Internal Arbitrage (Similar Markets)", show_lines=True)
+            table.add_column("Market A", style="cyan", max_width=30)
+            table.add_column("Price A", justify="right")
+            table.add_column("Market B", style="cyan", max_width=30)
+            table.add_column("Price B", justify="right")
+            table.add_column("Diff", justify="right", style="bold green")
+
+            for arb in internal[:10]:
+                table.add_row(
+                    arb.polymarket.question[:30],
+                    f"{arb.poly_yes:.0%}",
+                    arb.external.title[:30],
+                    f"{arb.ext_yes:.0%}",
+                    f"{arb.price_diff:.1%}",
+                )
+            console.print(table)
+
+        if cross_arbs:
+            table = Table(title="Cross-Platform Arbitrage", show_lines=True)
+            table.add_column("Polymarket", style="cyan", max_width=30)
+            table.add_column("Poly $", justify="right")
+            table.add_column("Platform", style="bold")
+            table.add_column("Ext $", justify="right")
+            table.add_column("Diff", justify="right", style="bold green")
+
+            for arb in cross_arbs[:10]:
+                table.add_row(
+                    arb.polymarket.question[:30],
+                    f"{arb.poly_yes:.0%}",
+                    arb.external.platform,
+                    f"{arb.ext_yes:.0%}",
+                    f"{arb.price_diff:.1%}",
+                )
+            console.print(table)
+        else:
+            console.print("[yellow]No cross-platform arbitrage found[/yellow]")
+
+        total = len(cross_arbs) + len(internal)
+        console.print(f"\n[bold]Found {total} opportunities[/bold] "
+                      f"(cross: {len(cross_arbs)}, internal: {len(internal)})")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=100, help="Max markets")
+@click.option("--min-volume", default=10000.0, help="Min 24h volume for MM")
+def mm_scan(max_markets: int, min_volume: float) -> None:
+    """Scan for market making opportunities."""
+    config = Config.from_env()
+
+    from polymarket_bot.market_maker import MarketMaker
+
+    console.print(Panel(
+        "[bold]Market Making Scanner[/bold]\nFind best markets for spread earning",
+        border_style="cyan",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        mm = MarketMaker()
+        candidates = mm.select_markets(markets, min_volume=min_volume)
+
+        if not candidates:
+            console.print("[yellow]No suitable markets for market making[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Market Making Candidates", show_lines=True)
+        table.add_column("Market", style="cyan", max_width=40)
+        table.add_column("YES", justify="right")
+        table.add_column("Volume 24h", justify="right")
+        table.add_column("Liquidity", justify="right")
+        table.add_column("Bid", justify="right", style="green")
+        table.add_column("Ask", justify="right", style="red")
+        table.add_column("Spread", justify="right")
+
+        for m in candidates:
+            quotes = mm.generate_quotes(m)
+            bid = quotes.bid_yes.price if quotes.bid_yes else 0
+            ask = quotes.ask_yes.price if quotes.ask_yes else 0
+
+            table.add_row(
+                m.question[:40],
+                f"{m.yes_price:.3f}",
+                f"${m.volume_24h:,.0f}",
+                f"${m.liquidity:,.0f}",
+                f"{bid:.4f}",
+                f"{ask:.4f}",
+                f"{quotes.spread:.4f}",
+            )
+        console.print(table)
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=200, help="Max markets to record")
+def record_prices(max_markets: int) -> None:
+    """Record current prices to history database for trend analysis."""
+    config = Config.from_env()
+
+    from polymarket_bot.price_history import PriceHistoryDB
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+
+        db = PriceHistoryDB()
+        try:
+            count = db.record_prices(markets)
+            console.print(f"[green]Recorded {count} market prices to history database[/green]")
+
+            slugs = db.get_tracked_slugs()
+            console.print(f"[dim]Total markets tracked: {len(slugs)}[/dim]")
+        finally:
+            db.close()
+
+
+@main.command()
+@click.argument("slug")
+def trend(slug: str) -> None:
+    """Show price trend analysis for a market."""
+    config = Config.from_env()
+
+    from polymarket_bot.price_history import PriceHistoryDB
+
+    with PolymarketClient(config) as client:
+        resp = client._http.get(
+            f"{config.gamma_host}/markets", params={"slug": slug}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            console.print(f"[red]Market not found: {slug}[/red]")
+            return
+
+        market_data = data[0] if isinstance(data, list) else data
+        m = client._parse_market(market_data)
+
+        db = PriceHistoryDB()
+        try:
+            t = db.analyze_trend(m)
+        finally:
+            db.close()
+
+        signal_colors = {
+            "STRONG_BUY": "bold green",
+            "BUY": "green",
+            "HOLD": "yellow",
+            "SELL": "red",
+            "STRONG_SELL": "bold red",
+        }
+        sig_color = signal_colors.get(t.signal, "white")
+
+        console.print(Panel(f"[bold]{m.question}[/bold]", border_style="cyan"))
+        console.print(f"  Current: {t.current_price:.4f}")
+        console.print(f"  1h ago: {t.price_1h_ago:.4f}" if t.price_1h_ago else "  1h ago: N/A")
+        console.print(f"  24h ago: {t.price_24h_ago:.4f}" if t.price_24h_ago else "  24h ago: N/A")
+        console.print(f"  7d ago: {t.price_7d_ago:.4f}" if t.price_7d_ago else "  7d ago: N/A")
+        console.print(f"\n  Trend 1h: {t.trend_1h:+.1%}")
+        console.print(f"  Trend 24h: {t.trend_24h:+.1%}")
+        console.print(f"  Trend 7d: {t.trend_7d:+.1%}")
+        console.print(f"  Volatility 24h: {t.volatility_24h:.4f}")
+        console.print(f"  Volume trend: {t.volume_trend:+.1%}")
+        console.print(f"  Support: {t.support_level:.4f} | Resistance: {t.resistance_level:.4f}")
+        console.print(f"\n  Signal: [{sig_color}]{t.signal}[/{sig_color}]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=200, help="Max markets to monitor")
+@click.option("--interval", "-i", default=5.0, help="Poll interval in seconds")
+@click.option("--duration", "-d", default=300, help="Duration in seconds")
+def realtime(max_markets: int, interval: float, duration: int) -> None:
+    """Real-time price monitoring with instant arbitrage detection."""
+    config = Config.from_env()
+
+    from polymarket_bot.websocket_stream import create_price_monitor
+
+    console.print(Panel(
+        f"[bold]Real-Time Monitor[/bold]\n"
+        f"Polling every {interval}s for {duration}s | Markets: {max_markets}\n"
+        f"Press Ctrl+C to stop",
+        border_style="magenta",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Monitoring {len(markets)} markets[/dim]")
+
+        monitor = create_price_monitor(markets)
+        registered = len(monitor._market_tokens)
+        console.print(f"[dim]Registered {registered} binary markets[/dim]")
+
+        def on_arb(alert):
+            console.print(
+                f"[bold red]ARB DETECTED![/bold red] {alert.market_question[:50]} | "
+                f"YES={alert.yes_price:.3f} NO={alert.no_price:.3f} = {alert.price_sum:.3f} | "
+                f"Profit: {alert.profit_pct:.2f}%"
+            )
+
+        monitor.on_alert(on_arb)
+
+        max_iters = int(duration / interval)
+        try:
+            monitor.start_polling(client, interval=interval, max_iterations=max_iters)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Monitor stopped[/yellow]")
+        finally:
+            monitor.stop()
+
+        alerts = monitor.get_recent_alerts()
+        console.print(f"\n[bold]Detected {len(alerts)} arbitrage opportunities[/bold]")
+
+
 if __name__ == "__main__":
     main()
