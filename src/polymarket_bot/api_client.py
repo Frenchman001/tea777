@@ -226,14 +226,18 @@ class PolymarketClient:
         outcome_prices = parse_json_field(data.get("outcomePrices"))
         clob_ids = parse_json_field(data.get("clobTokenIds"))
 
+        is_closed = bool(data.get("closed", False))
+
         if outcomes and outcome_prices:
             for i, outcome in enumerate(outcomes):
                 price = float(outcome_prices[i]) if i < len(outcome_prices) else 0.0
                 token_id = clob_ids[i] if i < len(clob_ids) else ""
+                winner = is_closed and price >= 0.99
                 tokens.append(Token(
                     token_id=token_id,
                     outcome=outcome,
                     price=price,
+                    winner=winner,
                 ))
         else:
             # Fallback: events endpoint nests tokens differently

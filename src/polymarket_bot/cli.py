@@ -955,5 +955,224 @@ def realtime(max_markets: int, interval: float, duration: int) -> None:
         console.print(f"\n[bold]Detected {len(alerts)} arbitrage opportunities[/bold]")
 
 
+@main.command()
+@click.option("--max-markets", "-n", default=30, help="Max markets to scan orderbooks")
+@click.option("--whale-threshold", default=500.0, help="Min USD for whale order")
+def whales(max_markets: int, whale_threshold: float) -> None:
+    """Detect smart money positioning via CLOB orderbook whale analysis."""
+    config = Config.from_env()
+
+    from polymarket_bot.whale_tracker import WhaleTracker
+
+    console.print(Panel(
+        f"[bold]Whale Tracker[/bold]\n"
+        f"Scanning top {max_markets} markets for large orders (>${whale_threshold:.0f})",
+        border_style="bold red",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        tracker = WhaleTracker(whale_threshold_usd=whale_threshold)
+        signals = tracker.scan_markets(client, markets, max_scan=max_markets)
+
+        if not signals:
+            console.print("[yellow]No whale activity detected[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Whale Signals", show_lines=True)
+        table.add_column("Signal", style="bold")
+        table.add_column("Market", style="cyan", max_width=35)
+        table.add_column("Side")
+        table.add_column("Whale $", justify="right", style="bold green")
+        table.add_column("% Book", justify="right")
+        table.add_column("Imbalance", justify="right")
+        table.add_column("Action", max_width=30)
+
+        for sig in signals[:15]:
+            table.add_row(
+                sig.signal,
+                sig.question[:35],
+                sig.side,
+                f"${sig.whale_size_usd:,.0f}",
+                f"{sig.whale_pct:.0%}",
+                f"{sig.imbalance_ratio:.1f}x",
+                sig.recommended_action[:30],
+            )
+        console.print(table)
+        console.print(f"\n[bold]Found {len(signals)} whale signals[/bold]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=200, help="Max markets to scan")
+@click.option("--max-days", default=14.0, help="Max days to expiration")
+@click.option("--bankroll", "-b", default=1000.0, help="Your bankroll")
+def decay(max_markets: int, max_days: float, bankroll: float) -> None:
+    """Find time-decay opportunities (low-prob near expiry = near-free money)."""
+    if bankroll <= 0:
+        console.print("[red]Bankroll must be positive[/red]")
+        return
+    config = Config.from_env()
+
+    from polymarket_bot.decay_harvester import DecayHarvester
+
+    console.print(Panel(
+        f"[bold]Decay Harvester[/bold]\n"
+        f"Finding low-probability markets expiring within {max_days:.0f} days\n"
+        f"Bankroll: ${bankroll:,.0f}",
+        border_style="bold yellow",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        harvester = DecayHarvester(
+            max_days=max_days, bankroll=bankroll,
+        )
+        opps = harvester.scan(markets)
+
+        if not opps:
+            console.print(
+                "[yellow]No decay opportunities found "
+                "(no low-prob markets near expiration)[/yellow]"
+            )
+            return
+
+        from rich.table import Table
+        table = Table(title="Decay Opportunities (Time Decay = Free Money)", show_lines=True)
+        table.add_column("Market", style="cyan", max_width=35)
+        table.add_column("YES $", justify="right")
+        table.add_column("Days", justify="right")
+        table.add_column("Return/yr", justify="right", style="bold green")
+        table.add_column("$/unit", justify="right")
+        table.add_column("Bet", justify="right", style="green")
+        table.add_column("Side")
+        table.add_column("Risk", justify="center")
+
+        for opp in opps[:15]:
+            risk_color = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "red"}.get(
+                opp.risk_level, "white",
+            )
+            table.add_row(
+                opp.question[:35],
+                f"{opp.yes_price:.1%}",
+                f"{opp.days_to_expiry:.1f}",
+                f"{opp.annualized_return_pct:.0f}%",
+                f"${opp.profit_per_dollar:.4f}",
+                f"${opp.recommended_bet_usd:.0f}",
+                opp.recommended_side,
+                f"[{risk_color}]{opp.risk_level}[/{risk_color}]",
+            )
+        console.print(table)
+        console.print(f"\n[bold]Found {len(opps)} decay opportunities[/bold]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=100, help="Max markets to analyze")
+@click.option("--min-volume", default=5000.0, help="Min 24h volume")
+def anomalies(max_markets: int, min_volume: float) -> None:
+    """Detect unusual volume patterns signaling insider activity."""
+    config = Config.from_env()
+
+    from polymarket_bot.volume_anomaly import VolumeAnomalyDetector
+
+    console.print(Panel(
+        f"[bold]Volume Anomaly Detector[/bold]\n"
+        f"Scanning {max_markets} markets for unusual trading patterns",
+        border_style="bold magenta",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        detector = VolumeAnomalyDetector(min_volume=min_volume)
+        results = detector.scan(markets)
+
+        if not results:
+            console.print("[yellow]No volume anomalies detected[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Volume Anomalies", show_lines=True)
+        table.add_column("Type", style="bold")
+        table.add_column("Market", style="cyan", max_width=35)
+        table.add_column("Vol 24h", justify="right")
+        table.add_column("V/L", justify="right")
+        table.add_column("Score", justify="right", style="bold yellow")
+        table.add_column("Dir")
+        table.add_column("Action", max_width=35)
+
+        for a in results[:15]:
+            table.add_row(
+                a.anomaly_type,
+                a.question[:35],
+                f"${a.volume_24h:,.0f}",
+                f"{a.volume_liquidity_ratio:.1f}x",
+                f"{a.anomaly_score:.1f}",
+                a.price_direction,
+                a.recommended_action[:35],
+            )
+        console.print(table)
+        console.print(f"\n[bold]Found {len(results)} anomalies[/bold]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=20, help="Max markets to check news for")
+@click.option("--max-hours", default=48.0, help="Max news age in hours")
+def news(max_markets: int, max_hours: float) -> None:
+    """Scan breaking news that could move market prices."""
+    config = Config.from_env()
+
+    from polymarket_bot.news_sentiment import NewsSentimentScanner
+
+    console.print(Panel(
+        f"[bold]News Sentiment Scanner[/bold]\n"
+        f"Checking top {max_markets} markets for recent news (<{max_hours:.0f}h)",
+        border_style="bold blue",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        scanner = NewsSentimentScanner(max_age_hours=max_hours)
+        try:
+            matches = scanner.scan_markets(markets, max_scan=max_markets)
+        finally:
+            scanner.close()
+
+        if not matches:
+            console.print("[yellow]No relevant news found for tracked markets[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="News Matches", show_lines=True)
+        table.add_column("Market", style="cyan", max_width=30)
+        table.add_column("Headline", max_width=35)
+        table.add_column("Source", style="dim")
+        table.add_column("Age", justify="right")
+        table.add_column("Sent.")
+        table.add_column("Action", max_width=30)
+
+        for m in matches[:15]:
+            sent_color = {
+                "POSITIVE": "green", "NEGATIVE": "red", "NEUTRAL": "yellow",
+            }.get(m.sentiment, "white")
+            table.add_row(
+                m.question[:30],
+                m.headline[:35],
+                m.source[:15],
+                f"{m.hours_ago:.0f}h",
+                f"[{sent_color}]{m.sentiment}[/{sent_color}]",
+                m.recommended_action[:30],
+            )
+        console.print(table)
+        console.print(f"\n[bold]Found {len(matches)} news matches[/bold]")
+
+
 if __name__ == "__main__":
     main()

@@ -207,10 +207,43 @@ class CrossPlatformScanner:
 
 
 def _question_similarity(q1: str, q2: str) -> float:
-    """Calculate string similarity between two market questions."""
+    """Calculate string similarity between two market questions.
+
+    Returns 0.0 if the questions differ only in embedded numbers
+    (e.g. different strike prices like $78k vs $72k).
+    """
     q1_clean = _normalize(q1)
     q2_clean = _normalize(q2)
-    return SequenceMatcher(None, q1_clean, q2_clean).ratio()
+
+    base_sim = SequenceMatcher(None, q1_clean, q2_clean).ratio()
+    if base_sim < 0.5:
+        return base_sim
+
+    nums1 = _extract_numbers(q1)
+    nums2 = _extract_numbers(q2)
+    if nums1 and nums2 and nums1 != nums2:
+        text1_no_nums = re.sub(r"[\d,.]+[kKmMbB]?", "", q1_clean).strip()
+        text2_no_nums = re.sub(r"[\d,.]+[kKmMbB]?", "", q2_clean).strip()
+        text_only_sim = SequenceMatcher(None, text1_no_nums, text2_no_nums).ratio()
+        if text_only_sim > 0.85:
+            return 0.0
+
+    return base_sim
+
+
+def _extract_numbers(text: str) -> list[float]:
+    """Extract all meaningful numbers from a market question."""
+    text_clean = text.lower().replace(",", "")
+    matches = re.findall(r"(\d+(?:\.\d+)?)\s*([kKmMbB])?", text_clean)
+    nums: list[float] = []
+    multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+    for val, suffix in matches:
+        n = float(val)
+        if suffix:
+            n *= multipliers.get(suffix.lower(), 1)
+        if n > 1:
+            nums.append(n)
+    return sorted(nums)
 
 
 def _normalize(text: str) -> str:
