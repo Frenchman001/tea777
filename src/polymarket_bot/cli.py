@@ -1174,5 +1174,302 @@ def news(max_markets: int, max_hours: float) -> None:
         console.print(f"\n[bold]Found {len(matches)} news matches[/bold]")
 
 
+# ── Private Profit Commands ─────────────────────────────────────────
+
+
+@main.command(name="safe-arb")
+@click.option("--max-markets", "-n", default=200, help="Max markets to scan")
+@click.option("--bankroll", "-b", default=1000.0, help="Your bankroll")
+def safe_arb(max_markets: int, bankroll: float) -> None:
+    """Guaranteed arbitrage with exact position sizing after fees."""
+    if bankroll <= 0:
+        console.print("[bold red]Error: bankroll must be positive[/bold red]")
+        return
+    config = Config.from_env()
+
+    from polymarket_bot.safe_arb import SafeArbEngine
+
+    console.print(Panel(
+        f"[bold]Safe Arbitrage Engine[/bold]\n"
+        f"Exact sizing with fee calculation | Bankroll: ${bankroll:,.0f}",
+        border_style="bold green",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        engine = SafeArbEngine(bankroll=bankroll)
+        positions = engine.scan(client, markets)
+
+        if not positions:
+            console.print("[yellow]No guaranteed arb opportunities after fees[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Safe Arbitrage Positions", show_lines=True)
+        table.add_column("Market", style="cyan", max_width=35)
+        table.add_column("YES", justify="right")
+        table.add_column("NO", justify="right")
+        table.add_column("Sum", justify="right")
+        table.add_column("Cost", justify="right")
+        table.add_column("Fees", justify="right", style="dim")
+        table.add_column("Net $", justify="right", style="bold green")
+        table.add_column("ROI%", justify="right")
+
+        for p in positions[:15]:
+            table.add_row(
+                p.question[:35],
+                f"{p.yes_price:.3f}",
+                f"{p.no_price:.3f}",
+                f"{p.price_sum:.3f}",
+                f"${p.total_cost:.2f}",
+                f"${p.total_fees:.2f}",
+                f"${p.net_profit:.2f}",
+                f"{p.net_profit_pct:.1f}%",
+            )
+        console.print(table)
+        total_profit = sum(p.net_profit for p in positions)
+        console.print(
+            f"\n[bold green]Found {len(positions)} safe arb positions | "
+            f"Total net profit: ${total_profit:.2f}[/bold green]"
+        )
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=100, help="Max markets to scan")
+@click.option("--min-correlation", default=0.5, help="Min correlation threshold")
+def hedge(max_markets: int, min_correlation: float) -> None:
+    """Find hedging opportunities across correlated markets."""
+    config = Config.from_env()
+
+    from polymarket_bot.hedge_engine import HedgeEngine
+
+    console.print(Panel(
+        f"[bold]Hedge Engine[/bold]\n"
+        f"Min correlation: {min_correlation} | Scanning {max_markets} markets",
+        border_style="bold yellow",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        engine = HedgeEngine(min_correlation=min_correlation)
+        hedges = engine.find_all_hedges(markets)
+
+        if not hedges:
+            console.print("[yellow]No hedge pairs found[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Hedge Pairs", show_lines=True)
+        table.add_column("Type", style="bold")
+        table.add_column("Primary", style="cyan", max_width=25)
+        table.add_column("Side")
+        table.add_column("Hedge", style="magenta", max_width=25)
+        table.add_column("Side")
+        table.add_column("Corr", justify="right")
+        table.add_column("Max Loss", justify="right", style="red")
+        table.add_column("E[P]", justify="right", style="green")
+
+        for h in hedges[:15]:
+            table.add_row(
+                h.hedge_type,
+                h.primary_question[:25],
+                h.primary_side,
+                h.hedge_question[:25],
+                h.hedge_side,
+                f"{h.correlation:.2f}",
+                f"{h.max_loss_pct:+.1f}%",
+                f"{h.expected_profit_pct:+.1f}%",
+            )
+        console.print(table)
+        console.print(f"\n[bold]Found {len(hedges)} hedge pairs[/bold]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=200, help="Max markets to scan")
+@click.option("--min-certainty", default=0.93, help="Min certainty threshold (0-1)")
+@click.option("--max-hours", default=72.0, help="Max hours to resolution")
+@click.option("--bankroll", "-b", default=1000.0, help="Your bankroll")
+def sniper(max_markets: int, min_certainty: float, max_hours: float, bankroll: float) -> None:
+    """Snipe near-certain outcomes close to market resolution."""
+    if bankroll <= 0:
+        console.print("[bold red]Error: bankroll must be positive[/bold red]")
+        return
+    config = Config.from_env()
+
+    from polymarket_bot.resolution_sniper import ResolutionSniper
+
+    console.print(Panel(
+        f"[bold]Resolution Sniper[/bold]\n"
+        f"Certainty ≥{min_certainty:.0%} | Within {max_hours:.0f}h of resolution | "
+        f"Bankroll: ${bankroll:,.0f}",
+        border_style="bold magenta",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        sniper_engine = ResolutionSniper(
+            min_certainty=min_certainty,
+            max_hours=max_hours,
+            bankroll=bankroll,
+        )
+        targets = sniper_engine.scan(markets)
+
+        if not targets:
+            console.print("[yellow]No sniper targets found[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Sniper Targets", show_lines=True)
+        table.add_column("Market", style="cyan", max_width=30)
+        table.add_column("Side", style="bold")
+        table.add_column("Price", justify="right")
+        table.add_column("Profit/$100", justify="right", style="green")
+        table.add_column("Hours", justify="right")
+        table.add_column("Risk", style="bold")
+        table.add_column("Bet $", justify="right")
+
+        for t in targets[:15]:
+            risk_color = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "red"}.get(
+                t.risk_level, "white",
+            )
+            table.add_row(
+                t.question[:30],
+                t.likely_outcome,
+                f"{t.outcome_price:.1%}",
+                f"${t.net_profit_per_100:.2f}",
+                f"{t.hours_to_resolution:.0f}h",
+                f"[{risk_color}]{t.risk_level}[/{risk_color}]",
+                f"${t.recommended_bet:.0f}",
+            )
+        console.print(table)
+        total_bet = sum(t.recommended_bet for t in targets)
+        console.print(
+            f"\n[bold]Found {len(targets)} sniper targets | "
+            f"Total recommended: ${total_bet:.0f}[/bold]"
+        )
+
+
+@main.command(name="exit-rules")
+@click.option("--max-markets", "-n", default=50, help="Max markets to evaluate")
+@click.option("--stop-loss", default=10.0, help="Stop-loss trigger %")
+@click.option("--take-profit", default=20.0, help="Take-profit trigger %")
+@click.option("--trailing-stop", default=8.0, help="Trailing stop %")
+def exit_rules(
+    max_markets: int, stop_loss: float, take_profit: float, trailing_stop: float,
+) -> None:
+    """Simulate exit strategy rules (stop-loss, take-profit, trailing stop)."""
+    config = Config.from_env()
+
+    from polymarket_bot.exit_strategy import ExitConfig, ExitStrategyEngine
+
+    console.print(Panel(
+        f"[bold]Exit Strategy Engine[/bold]\n"
+        f"Stop-loss: {stop_loss}% | Take-profit: {take_profit}% | "
+        f"Trailing: {trailing_stop}%",
+        border_style="bold red",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        exit_config = ExitConfig(
+            stop_loss_pct=stop_loss,
+            take_profit_pct=take_profit,
+            trailing_stop_pct=trailing_stop,
+        )
+        engine = ExitStrategyEngine(config=exit_config)
+        rules = engine.simulate_exits(markets)
+
+        if not rules:
+            console.print("[yellow]No exit signals triggered[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Exit Signals", show_lines=True)
+        table.add_column("Type", style="bold")
+        table.add_column("Action", style="cyan", max_width=35)
+        table.add_column("Entry", justify="right")
+        table.add_column("Now", justify="right")
+        table.add_column("P&L", justify="right")
+        table.add_column("Urgency", style="bold")
+
+        for r in rules[:15]:
+            pnl_color = "green" if r.pnl_pct >= 0 else "red"
+            urg_color = {"IMMEDIATE": "red", "SOON": "yellow", "WATCH": "dim"}.get(
+                r.urgency, "white",
+            )
+            table.add_row(
+                r.rule_type,
+                r.action[:35],
+                f"{r.entry_price:.3f}",
+                f"{r.current_price:.3f}",
+                f"[{pnl_color}]{r.pnl_pct:+.1f}%[/{pnl_color}]",
+                f"[{urg_color}]{r.urgency}[/{urg_color}]",
+            )
+        console.print(table)
+        console.print(f"\n[bold]Found {len(rules)} exit signals[/bold]")
+
+
+@main.command()
+@click.option("--max-markets", "-n", default=200, help="Max markets to scan")
+@click.option("--max-combos", default=20, help="Max combos to show")
+def combos(max_markets: int, max_combos: int) -> None:
+    """Find risk-free multi-market combo positions."""
+    config = Config.from_env()
+
+    from polymarket_bot.riskfree_combo import RiskFreeComboEngine
+
+    console.print(Panel(
+        f"[bold]Risk-Free Combo Scanner[/bold]\n"
+        f"Scanning {max_markets} markets for guaranteed multi-leg positions",
+        border_style="bold green",
+    ))
+
+    with PolymarketClient(config) as client:
+        markets = client.get_all_active_markets(max_markets)
+        console.print(f"[dim]Loaded {len(markets)} markets[/dim]")
+
+        engine = RiskFreeComboEngine()
+        combos_list = engine.scan(markets, max_combos=max_combos)
+
+        if not combos_list:
+            console.print("[yellow]No risk-free combos found[/yellow]")
+            return
+
+        from rich.table import Table
+        table = Table(title="Risk-Free Combos", show_lines=True)
+        table.add_column("Type", style="bold")
+        table.add_column("Combo", style="cyan", max_width=30)
+        table.add_column("Legs")
+        table.add_column("Cost/$100", justify="right")
+        table.add_column("Min Pay", justify="right")
+        table.add_column("Profit", justify="right", style="bold green")
+        table.add_column("ROI%", justify="right")
+
+        for c in combos_list[:15]:
+            table.add_row(
+                c.combo_type,
+                c.name[:30],
+                str(len(c.legs)),
+                f"${c.total_cost_per_100:.2f}",
+                f"${c.min_payout:.2f}",
+                f"${c.guaranteed_profit:.2f}",
+                f"{c.profit_pct:.1f}%",
+            )
+        console.print(table)
+        total_profit = sum(c.guaranteed_profit for c in combos_list)
+        console.print(
+            f"\n[bold green]Found {len(combos_list)} risk-free combos | "
+            f"Total guaranteed profit: ${total_profit:.2f}/100$[/bold green]"
+        )
+
+
 if __name__ == "__main__":
     main()
