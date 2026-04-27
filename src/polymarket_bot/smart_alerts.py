@@ -179,8 +179,17 @@ class SmartAlertEngine:
 
         signals = self.signal_analyzer.analyze_markets(markets)
         for sig in signals[:20]:
+            # Use signal's expected value to estimate true win probability.
+            # confidence != win probability; derive from price + EV edge.
+            est_prob = min(
+                sig.recommended_price + sig.expected_value,
+                0.95,
+            )
+            if est_prob <= sig.recommended_price:
+                est_prob = sig.recommended_price + 0.01
+
             kelly = kelly_criterion(
-                sig.confidence,
+                est_prob,
                 sig.recommended_price,
                 bankroll=bankroll,
             )
@@ -234,7 +243,7 @@ class SmartAlertEngine:
                 confidence=0.7,
                 details=pair.reasoning,
                 risk_level="MEDIUM",
-                market_slug=pair.market_a.slug,
+                market_slug=f"{pair.market_a.slug}|{pair.market_b.slug}",
             ))
 
         return alerts

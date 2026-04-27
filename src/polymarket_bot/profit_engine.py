@@ -391,7 +391,12 @@ def _guess_category(market: Market) -> str:
 
     category_keywords: dict[str, list[str]] = {
         "crypto": ["crypto", "bitcoin", "btc", "ethereum", "eth", "solana"],
-        "sports": ["nba", "nfl", "mlb", "soccer", "football", "tennis"],
+        "sports": [
+            "nba", "nfl", "mlb", "soccer", "football", "tennis",
+            "fifa", "world cup", "champions league", "premier league",
+            "la liga", "serie a", "bundesliga", "ufc", "boxing",
+            "f1", "formula 1", "cricket", "hockey", "nhl",
+        ],
         "politics": ["election", "president", "senate", "congress", "vote"],
         "finance": ["fed", "interest rate", "gdp", "stock", "s&p"],
         "tech": ["ai", "openai", "google", "apple", "microsoft", "spacex"],

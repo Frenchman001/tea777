@@ -168,7 +168,9 @@ class MultiOutcomeArbitrageScanner:
                 "slug": m.get("slug", ""),
             })
 
-        if total_price <= 0 or total_price >= self.config.max_price_sum:
+        # Skip if total price is near zero (likely expired/illiquid outcomes)
+        # or above the max threshold
+        if total_price <= 0.05 or total_price >= self.config.max_price_sum:
             return None
 
         profit_pct = (1.0 - total_price) * 100

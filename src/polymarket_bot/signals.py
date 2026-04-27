@@ -175,6 +175,11 @@ class SignalAnalyzer:
         confidence = min(0.5 + math.log2(volume_ratio) * 0.1, 0.85)
         strength = self._confidence_to_strength(confidence)
 
+        # Momentum implies price will continue in the current direction.
+        # Estimate EV as a fraction of the remaining distance to 1.0.
+        momentum_edge = min(volume_ratio * 0.005, 0.05)
+        ev = momentum_edge * (1.0 - price) if price < 1.0 else 0.0
+
         return TradingSignal(
             signal_type=SignalType.MOMENTUM,
             strength=strength,
@@ -182,7 +187,7 @@ class SignalAnalyzer:
             confidence=confidence,
             recommended_side=side,
             recommended_price=price,
-            expected_value=0.0,
+            expected_value=ev,
             reason=f"24h volume {volume_ratio:.1f}x above average — momentum signal",
             risk_score=0.6,
         )
