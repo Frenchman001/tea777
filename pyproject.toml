@@ -1,0 +1,37 @@
+[project]
+name = "polymarket-arb-bot"
+version = "0.1.0"
+description = "Arbitrage bot between Polymarket and bookmakers (Fonbet, Winline, 1xbet)"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "python-telegram-bot>=21.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "rapidfuzz>=3.5.0",
+    "py-clob-client>=0.18.0",
+    "python-dotenv>=1.0.0",
+    "loguru>=0.7.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "fake-useragent>=1.4.0",
+    "apscheduler>=3.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.1.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
